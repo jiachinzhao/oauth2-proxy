@@ -75,6 +75,7 @@ type OAuthProxy struct {
 	OAuthStartPath    string
 	OAuthCallbackPath string
 	AuthOnlyPath      string
+	AuthAndSignInPath string
 	UserInfoPath      string
 
 	allowedRoutes        []allowedRoute
@@ -197,6 +198,7 @@ func NewOAuthProxy(opts *options.Options, validator func(string) bool) (*OAuthPr
 		OAuthStartPath:    fmt.Sprintf("%s/start", opts.ProxyPrefix),
 		OAuthCallbackPath: fmt.Sprintf("%s/callback", opts.ProxyPrefix),
 		AuthOnlyPath:      fmt.Sprintf("%s/auth", opts.ProxyPrefix),
+		AuthAndSignInPath: fmt.Sprintf("%s/auth_sign_in", opts.ProxyPrefix),
 		UserInfoPath:      fmt.Sprintf("%s/userinfo", opts.ProxyPrefix),
 
 		ProxyPrefix:          opts.ProxyPrefix,
@@ -575,6 +577,10 @@ func (p *OAuthProxy) GetRedirect(req *http.Request) (redirect string, err error)
 	}
 
 	redirect = req.Header.Get("X-Auth-Request-Redirect")
+	if redirect == ""{
+		redirect = req.Header.Get("X-Forwarded-Uri")
+		logger.Printf("redirect use header X-Forwarded-Uri: %s", redirect)
+	}
 	if req.Form.Get("rd") != "" {
 		redirect = req.Form.Get("rd")
 	}
@@ -747,6 +753,8 @@ func (p *OAuthProxy) serveHTTP(rw http.ResponseWriter, req *http.Request) {
 		p.AuthenticateOnly(rw, req)
 	case path == p.UserInfoPath:
 		p.UserInfo(rw, req)
+	case path == p.AuthAndSignInPath:
+		p.AuthAndSignIn(rw, req)
 	default:
 		p.Proxy(rw, req)
 	}
@@ -939,7 +947,18 @@ func (p *OAuthProxy) AuthenticateOnly(rw http.ResponseWriter, req *http.Request)
 		rw.WriteHeader(http.StatusAccepted)
 	})).ServeHTTP(rw, req)
 }
-
+//AuthAndSignIn check whether the user is currently logged in, if not, then redirect to sign in page
+func (p *OAuthProxy) AuthAndSignIn(rw http.ResponseWriter, req *http.Request) {
+	session, err := p.getAuthenticatedSession(rw, req)
+	if err == nil {
+		p.addHeadersForProxying(rw, req, session)
+		p.headersChain.Then(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+			rw.WriteHeader(http.StatusAccepted)
+		})).ServeHTTP(rw, req)
+		return
+	}
+	p.SignInPage(rw, req, http.StatusForbidden)
+}
 // SkipAuthProxy proxies allowlisted requests and skips authentication
 func (p *OAuthProxy) SkipAuthProxy(rw http.ResponseWriter, req *http.Request) {
 	p.headersChain.Then(p.serveMux).ServeHTTP(rw, req)
@@ -1042,3 +1061,4 @@ func (p *OAuthProxy) ErrorJSON(rw http.ResponseWriter, code int) {
 	rw.Header().Set("Content-Type", applicationJSON)
 	rw.WriteHeader(code)
 }
+
